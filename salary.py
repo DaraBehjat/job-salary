@@ -1,10 +1,19 @@
 import numpy as np 
 import matplotlib.pyplot as plt 
 import pandas as pd 
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import OneHotEncoder
+
+# from sklearn.linear_model import LinearRegression
 from sklearn import metrics
 from sklearn.preprocessing import LabelBinarizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn import cross_validation
+from sklearn import metrics
+import sklearn.linear_model as lm
+
+import string
+import os
+#from scipy.sparse import hstack, csr_matrix
 
 '''
 load data
@@ -14,96 +23,64 @@ export predictions
 '''
 
 
-'''
-'''
-def shuffleDataFrame(df):
-	indices = range(len(df))
-	np.random.shuffle(indices)
-	return df.iloc[indices]
+def text_features(text):
+	n_words = float(len(text.split(' ')))
+	n_alphanumeric = float(len([ch for ch in text if ch not in exclude]))
+	n_caps = float(len([ch for ch in text if ch.isupper()]))
+	word_len = n_alphanumeric/n_words
+	cap_ratio = n_caps/n_alphanumeric
+	caps_present = cap_ratio != 0
+	punc_ratio = len([ch for ch in text if ch in exclude])/n_words
+	return [n_words, cap_ratio, punc_ratio, word_len, caps_present]
 
 
-'''
-'''
-def makeNFold(df, n=5):
-	nRows = len(df)
-	folds = np.array(range(nRows))*n/nRows
-	np.random.shuffle(folds)
-	df['Folds'] = folds
+def load(dataFileName):
+	data = pd.read_csv(dataFileName)
+	data = data.fillna('none')
+	return data
 
 
-'''
-'''
-def randomSplit(df, p=0.8):
-	df = shuffleDataFrame(df)
-	n = len(df)*p
-	train = df[:n]
-	test = df[n:]
-	return train, test
+def encodeCategorical(df, order=1):
+    f_array = np.array(df)
+    n = np.shape(f_array)
 
+    if len(n) > 1:
+    	f_array = [string.join(r, sep=':') for r in f_array]
+    	f_array = [string.replace(r, ' ', '') for r in f_array]
+    	f_array = [string.replace(r, ':', ' ') for r in f_array]
+    else:
+    	f_array = [string.replace(r, ' ', '') for r in f_array]
 
-'''
-'''
-def encodeCategorical(data):
-	data = data.copy()
-	data[data.isnull()] = 'nan'
-	categories = data.unique()
-	index = range(len(categories))
+    order = min(order, n[-1])
+    vect = CountVectorizer(ngram_range=(order, order))
+    f_array = vect.fit_transform(np.hstack(f_array))
 
-	for i in index: 
-		data[data==categories[i]] = i
+    return vect, f_array
 
-	enc = OneHotEncoder()
-	enc.fit(np.matrix(index).transpose())
-	data = enc.transform(np.matrix(data).transpose())
-	return pd.DataFrame(data.toarray())
-
-
-
-
-'''
-M columns, each a variable. The ith variable has n_i categories.
-Turn each column into integers.
-Turn the data frame of integers into a matrix.
-'''
-def encodeMultiCategorical(data):
-	data = data.copy()
-	num_of_cols = len(data.columns)
-	n = np.zeros(num_of_columns)
-
-	# for each column
-	for i in range(num_of_cols):
-		col = data.columns[i]
-		categories = data[col].unique()
-		n[i] = len(categories)
-
-	enc = OneHotEncoder()
-	enc.fit(np.matrix(index).transpose())
-	data = enc.transform(np.matrix(data).transpose())
-	return pd.DataFrame(data.toarray())
+def meanAbsoluteError(ground_truth, predictions):
+	diff = np.abs(ground_truth - predictions)
+	return np.sum(diff)/np.size(diff)
 
 
 if __name__ == "__main__":
-	dataFileName = "train.csv"
-	np.random.seed(0)
+	np.random.seed(42)
+	data = load("train_100k.csv")
 
-	data = pd.read_csv(dataFileName)
-	X = encodeCategorical(data['ContractType'])
-	data = pd.concat([data, X], axis=1)
+	features = data[['ContractType', 'ContractTime', 'Category']]
+	vect, f_array = encodeCategorical(features, 1)
 
-	train, test = randomSplit(data)
+	target = data['SalaryNormalized']
 
-# 	features = 'ContractType'
-# #	features = ['SourceName', 'LocationNormalized', 'Company', 'ContractTime', 'ContractType']
-# 	target = 'SalaryNormalized'
+	clf = lm.LinearRegression()
+	mae_scorer = metrics.make_scorer(meanAbsoluteError, greater_is_better=False)
+	
+	mae_scores = cross_validation.cross_val_score(clf, f_array, target, cv=5, scoring=mae_scorer)
+	mse_scores = cross_validation.cross_val_score(clf, f_array, target, cv=5, scoring='mean_squared_error')
 
-	regressors = train.ix[:,0:]
-	target = train['SalaryNormalized']
+	print('MAE:', round(np.mean(mae_scores), 0))
+	print('MSE:', round(np.mean(mse_scores), 0))
 
-	clf = LinearRegression()
-	clf.fit(regressors, target)
-
-	y_pred = clf.predict(test.ix[:,0:])
-	y_true = test['SalaryNormalized']
-
-	print('MAE:', metrics.mean_absolute_error(y_true, y_pred))
-	print('MSE:', metrics.mean_squared_error(y_true, y_pred))
+	clf.fit(f_array, target)
+	pred = clf.predict(f_array)
+	results = pd.DataFrame({'names': vect.get_feature_names(), 'weights': clf.coef_})
+	results = results.sort('weights', ascending=0)
